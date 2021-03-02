@@ -61,9 +61,9 @@ namespace PullRequestQuantifier.Repository.Service.Events
                     await Tools.QuantifyRepositories.Program.Main(new[] { "-repoPath", clonePath });
                     using var streamReader = new StreamReader(fileSystem.Path.Combine(clonePath, $"{repoDirectory}_QuantifierResults.csv"));
                     using var csv = new CsvReader(streamReader, CultureInfo.InvariantCulture);
-                    csv.Context.RegisterClassMap<CommitStatsMap>();
-                    var repositoryStats = csv.GetRecords<CommitStats>();
-                    repositoryStats = repositoryStats.Select(
+                    csv.Context.RegisterClassMap<CommitStatsTableEntityMap>();
+                    var commitStatsTableEntities = csv.GetRecords<CommitStatsTableEntity>();
+                    commitStatsTableEntities = commitStatsTableEntities.Select(
                         r =>
                         {
                             r.PartitionKey = $"{payload.Installation.Account.Id}-{payloadRepository.Id}";
@@ -71,8 +71,8 @@ namespace PullRequestQuantifier.Repository.Service.Events
                             return r;
                         }).ToList();
 
-                    await blobStorage.CreateTableAsync(nameof(CommitStats));
-                    await blobStorage.InsertOrReplaceTableEntitiesAsync(nameof(CommitStats), repositoryStats);
+                    await blobStorage.CreateTableAsync(nameof(CommitStatsTableEntity));
+                    await blobStorage.InsertOrReplaceTableEntitiesAsync(nameof(CommitStatsTableEntity), commitStatsTableEntities);
                 }
                 catch (Exception e)
                 {

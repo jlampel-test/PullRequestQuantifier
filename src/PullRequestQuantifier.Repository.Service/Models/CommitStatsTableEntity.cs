@@ -1,8 +1,9 @@
 namespace PullRequestQuantifier.Repository.Service.Models
 {
+    using System;
     using Microsoft.WindowsAzure.Storage.Table;
 
-    public sealed class CommitStats : TableEntity
+    public sealed class CommitStatsTableEntity : TableEntity
     {
         public string CommitSha1 { get; set; }
 
@@ -21,5 +22,11 @@ namespace PullRequestQuantifier.Repository.Service.Models
         public int AbsoluteLinesAdded { get; set; }
 
         public int AbsoluteLinesDeleted { get; set; }
+
+        public TimeSpan TimeToMerge { get; set; }
+
+        public string AuthorEmail { get; set; }
+
+        public string AuthorName { get; set; }
     }
 }

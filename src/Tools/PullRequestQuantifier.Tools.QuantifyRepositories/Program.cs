@@ -28,8 +28,8 @@
 
             var organizations = commandLine.ConfigFile != null
                 ? new DeserializerBuilder()
-                .Build()
-                .Deserialize<List<Organization>>(await File.ReadAllTextAsync(commandLine.ConfigFile))
+                    .Build()
+                    .Deserialize<List<Organization>>(await File.ReadAllTextAsync(commandLine.ConfigFile))
                 : new List<Organization>();
 
             if (!string.IsNullOrEmpty(commandLine.User)
@@ -65,7 +65,7 @@
 
             await InitializeResultFile(resultFile);
 
-            await RunQuantifier(
+            await ComputeRepoStats(
                 quantifyClient,
                 resultFile,
                 repoPath);
@@ -101,7 +101,7 @@
                 await InitializeResultFile(resultFile);
 
                 var repoPath = Path.Combine(clonePath, repository.Repository);
-                await RunQuantifier(
+                await ComputeRepoStats(
                     quantifyClient,
                     resultFile,
                     repoPath);
@@ -114,10 +114,10 @@
             await streamWriter.WriteLineAsync(
                 "CommitSha1,QuantifiedLinesAdded,QuantifiedLinesDeleted,AbsoluteLinesAdded," +
                 "AbsoluteLinesDeleted,PercentileAddition," +
-                "PercentileDeletion,DiffPercentile,Label");
+                "PercentileDeletion,DiffPercentile,Label,TimeToMerge,AuthorEmail,AuthorName");
         }
 
-        private static async Task AddResultsToFile(IReadOnlyDictionary<string, QuantifierResult> results, string csvResultPath)
+        private static async Task AddResultsToFile(IReadOnlyDictionary<string, CommitStats> results, string csvResultPath)
         {
             await using var streamWriter = new StreamWriter(csvResultPath, true);
             foreach (var result in results)
@@ -126,16 +126,19 @@
                     $"{result.Key}," +
                     $"{result.Value.QuantifiedLinesAdded}," +
                     $"{result.Value.QuantifiedLinesDeleted}," +
-                    $"{result.Value.QuantifierInput.Changes.Sum(c => c.AbsoluteLinesAdded)}," +
-                    $"{result.Value.QuantifierInput.Changes.Sum(c => c.AbsoluteLinesDeleted)}," +
+                    $"{result.Value.AbsoluteLinesAdded}," +
+                    $"{result.Value.AbsoluteLinesDeleted}," +
                     $"{Math.Round(result.Value.PercentileAddition, 2)}," +
                     $"{Math.Round(result.Value.PercentileDeletion, 2)}," +
-                    $"{Math.Round(result.Value.FormulaPercentile, 2)}," +
-                    $"{result.Value.Label}");
+                    $"{Math.Round(result.Value.DiffPercentile, 2)}," +
+                    $"{result.Value.Label}," +
+                    $"{result.Value.TimeToMerge}," +
+                    $"{result.Value.AuthorEmail}," +
+                    $"{result.Value.AuthorName}");
             }
         }
 
-        private static async Task RunQuantifier(
+        private static async Task ComputeRepoStats(
             QuantifyClient quantifyClient,
             string resultFile,
             string repoPath)
@@ -159,7 +162,7 @@
             sw.Reset();
             sw.Start();
             var batchSize = 100;
-            var quantifierResults = new ConcurrentDictionary<string, QuantifierResult>();
+            var commitStats = new ConcurrentDictionary<string, CommitStats>();
             for (int page = 0; page < (commits.Count() / batchSize) + 1; page++)
             {
                 var commitBatch = commits.Skip(batchSize * page).Take(batchSize);
@@ -168,19 +171,36 @@
                     {
                         try
                         {
-                            var quantifierInput = new QuantifierInput();
-                            foreach (var parent in commit.Parents)
+                            // we don't quantify first commit to repo
+                            if (!commit.Parents.Any())
                             {
-                                var patch = repo.Diff.Compare<Patch>(parent.Tree, commit.Tree);
-
-                                foreach (var gitFilePatch in patch.GetGitFilePatch())
-                                {
-                                    quantifierInput.Changes.Add(gitFilePatch);
-                                }
+                                return;
                             }
 
-                            var quantifierResult = await quantifyClient.Compute(quantifierInput);
-                            quantifierResults.TryAdd(commit.Sha, quantifierResult);
+                            var quantifierResult = await ComputeQuantifierStats(
+                                quantifyClient,
+                                commit,
+                                repo);
+
+                            var timeToMerge = ComputeTimeToMerge(commit, repo);
+
+                            var commitStat = new CommitStats
+                            {
+                                Label = quantifierResult.Label,
+                                CommitSha1 = commit.Sha,
+                                DiffPercentile = quantifierResult.FormulaPercentile,
+                                PercentileAddition = quantifierResult.PercentileAddition,
+                                PercentileDeletion = quantifierResult.PercentileDeletion,
+                                AbsoluteLinesAdded = quantifierResult.QuantifierInput.Changes.Sum(c => c.AbsoluteLinesAdded),
+                                AbsoluteLinesDeleted = quantifierResult.QuantifierInput.Changes.Sum(c => c.AbsoluteLinesDeleted),
+                                QuantifiedLinesAdded = quantifierResult.QuantifiedLinesAdded,
+                                QuantifiedLinesDeleted = quantifierResult.QuantifiedLinesDeleted,
+                                TimeToMerge = timeToMerge,
+                                AuthorEmail = commit.Author.Email,
+                                AuthorName = commit.Author.Name
+                            };
+
+                            commitStats.TryAdd(commit.Sha, commitStat);
                         }
                         catch (Exception e)
                         {
@@ -188,10 +208,45 @@
                         }
                     });
                 await Task.WhenAll(quantifyTasks);
-                await AddResultsToFile(quantifierResults, resultFile);
-                quantifierResults = new ConcurrentDictionary<string, QuantifierResult>();
+                await AddResultsToFile(commitStats, resultFile);
+                commitStats = new ConcurrentDictionary<string, CommitStats>();
                 Console.WriteLine($"{page * batchSize}/{commits.Count()} {sw.Elapsed}");
             }
+        }
+
+        private static async Task<QuantifierResult> ComputeQuantifierStats(
+            QuantifyClient quantifyClient,
+            Commit commit,
+            LibGit2Sharp.Repository repo)
+        {
+            var quantifierInput = new QuantifierInput();
+            foreach (var parent in commit.Parents)
+            {
+                var patch = repo.Diff.Compare<Patch>(parent.Tree, commit.Tree);
+
+                foreach (var gitFilePatch in patch.GetGitFilePatch())
+                {
+                    quantifierInput.Changes.Add(gitFilePatch);
+                }
+            }
+
+            var quantifierResult = await quantifyClient.Compute(quantifierInput);
+            return quantifierResult;
+        }
+
+        private static TimeSpan ComputeTimeToMerge(Commit commit, LibGit2Sharp.Repository repo)
+        {
+            var mergeCommitWhen = commit.Author.When;
+            var firstCommitInTree = repo.Commits.QueryBy(
+                new CommitFilter
+                {
+                    SortBy = CommitSortStrategies.Reverse,
+                    IncludeReachableFrom = commit.Sha,
+                    ExcludeReachableFrom = commit.Parents.First().Sha
+                }).First();
+            var firstCommitWhen = firstCommitInTree.Author.When;
+            var timeToMerge = mergeCommitWhen - firstCommitWhen;
+            return timeToMerge;
         }
     }
 }

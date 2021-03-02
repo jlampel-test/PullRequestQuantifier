@@ -3,9 +3,9 @@ namespace PullRequestQuantifier.Repository.Service.Models
     using System.Globalization;
     using CsvHelper.Configuration;
 
-    public sealed class CommitStatsMap : ClassMap<CommitStats>
+    public sealed class CommitStatsTableEntityMap : ClassMap<CommitStatsTableEntity>
     {
-        public CommitStatsMap()
+        public CommitStatsTableEntityMap()
         {
             AutoMap(CultureInfo.InvariantCulture);
             Map(m => m.PartitionKey).Ignore();
